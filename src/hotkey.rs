@@ -8,8 +8,9 @@ use std::thread;
 
 #[derive(Debug, Clone, Copy)]
 pub enum HotkeyEvent {
-    KeyDown,  // 热键按下 → 开始录音
-    KeyUp,    // 热键松开 → 停止录音
+    KeyDown,     // 热键按下 → 开始录音
+    KeyUp,       // 热键松开 → 停止录音
+    EscPressed,  // Esc 键 → 取消预览，进入纠错
 }
 
 /// 解析热键字符串为虚拟键码列表
@@ -72,18 +73,20 @@ pub fn spawn_hotkey_thread(
 
     thread::spawn(move || {
         let mut was_pressed = false;
+        let mut was_esc = false;
 
         loop {
             #[cfg(target_os = "windows")]
-            let all_pressed = unsafe {
+            let (all_pressed, esc_down) = unsafe {
                 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
                 let mods_ok = modifiers.iter().all(|&vk| GetAsyncKeyState(vk) < 0);
                 let main_ok = GetAsyncKeyState(main_vk) < 0;
-                mods_ok && main_ok
+                let esc = GetAsyncKeyState(0x1B) < 0; // VK_ESCAPE
+                (mods_ok && main_ok, esc)
             };
 
             #[cfg(not(target_os = "windows"))]
-            let all_pressed = false;
+            let (all_pressed, esc_down) = (false, false);
 
             if all_pressed && !was_pressed {
                 let _ = tx.send(HotkeyEvent::KeyDown);
@@ -92,6 +95,12 @@ pub fn spawn_hotkey_thread(
                 let _ = tx.send(HotkeyEvent::KeyUp);
             }
             was_pressed = all_pressed;
+
+            // Esc 检测（按下瞬间触发一次）
+            if esc_down && !was_esc {
+                let _ = tx.send(HotkeyEvent::EscPressed);
+            }
+            was_esc = esc_down;
 
             thread::sleep(Duration::from_millis(20));
         }

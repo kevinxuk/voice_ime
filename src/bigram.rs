@@ -62,6 +62,23 @@ impl BigramTable {
         }
     }
 
+    /// 调整文本中所有 bigram 的频率（正值=提升，负值=降低）
+    pub fn adjust_text(&mut self, text: &str, delta: i32) {
+        let chars: Vec<char> = text.chars()
+            .filter(|c| is_content_char(*c))
+            .collect();
+
+        for i in 0..chars.len().saturating_sub(1) {
+            let entry = self.table.entry((chars[i], chars[i + 1])).or_insert(0);
+            if delta < 0 {
+                *entry = entry.saturating_sub(delta.unsigned_abs());
+            } else {
+                *entry = entry.saturating_add(delta as u32);
+            }
+        }
+        self.updates += 1;
+    }
+
     /// 保存到磁盘
     pub fn save(&mut self) {
         if self.updates == 0 { return; }

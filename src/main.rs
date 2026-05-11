@@ -27,7 +27,7 @@ use crate::asr::StreamHandle;
 enum AppState {
     Idle,
     Recording { handle: StreamHandle, start: Instant },
-    Previewing { text: String, start: Instant },
+    Previewing { text: String, original_raw: String, start: Instant },
 }
 
 /// 应用核心
@@ -111,6 +111,7 @@ impl App {
                                 self.preview.show_text(&final_text);
                                 state = AppState::Previewing {
                                     text: final_text,
+                                    original_raw: raw,
                                     start: Instant::now(),
                                 };
                             } else {
@@ -119,6 +120,30 @@ impl App {
                             self.ui_phase.store(1, Ordering::Relaxed);
                         } else {
                             state = AppState::Idle;
+                        }
+                    }
+                    hotkey::HotkeyEvent::EscPressed => {
+                        // 预览状态下按 Esc → 取消输出，弹出纠错对话框
+                        if let AppState::Previewing { text, original_raw, .. } = &state {
+                            self.preview.hide();
+                            let prefill = text.clone();
+
+                            if let Some(corrected) = show_correction_dialog(&prefill) {
+                                if corrected != prefill && !corrected.is_empty() {
+                                    // 自动学习
+                                    self.corrector.learn_from_correction(&prefill, &corrected);
+                                }
+                                // 输出修改后的文本
+                                if !corrected.is_empty() {
+                                    if let Err(e) = self.keyboard.send_text(&corrected) {
+                                        log::error!("输出: {}", e);
+                                    }
+                                    self.corrector.record(&corrected);
+                                    log::info!("📤 已输出(纠正): {}", corrected);
+                                }
+                            }
+                            state = AppState::Idle;
+                            self.ui_phase.store(1, Ordering::Relaxed);
                         }
                     }
                 }
@@ -138,7 +163,7 @@ impl App {
             }
 
             // 预览 → 1秒后自动输出
-            if let AppState::Previewing { ref text, ref start } = state {
+            if let AppState::Previewing { ref text, ref start, .. } = state {
                 if start.elapsed() >= Duration::from_secs(1) {
                     if !text.is_empty() {
                         if let Err(e) = self.keyboard.send_text(text) {
@@ -277,4 +302,158 @@ fn main() {
     };
     app.run();
     let _ = ui_handle.join();
+}
+
+/// Win32 弹出纠错对话框（预填文字，用户修改后返回）
+/// 返回 Some(修改后文字) 或 None（取消）
+#[cfg(target_os = "windows")]
+fn show_correction_dialog(prefill: &str) -> Option<String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+    use windows_sys::Win32::Graphics::Gdi::*;
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+
+    use std::sync::{Arc, Mutex};
+
+    let result: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let result_clone = result.clone();
+    let prefill_owned = prefill.to_string();
+
+    // 在独立线程运行对话框（避免阻塞主消息循环）
+    let handle = std::thread::spawn(move || {
+        unsafe {
+            let hinstance = GetModuleHandleW(std::ptr::null());
+
+            // 注册窗口类
+            let class_name: Vec<u16> = "VoiceIME_Correction\0".encode_utf16().collect();
+            let wc = WNDCLASSW {
+                style: CS_HREDRAW | CS_VREDRAW,
+                lpfnWndProc: Some(DefWindowProcW),
+                cbClsExtra: 0, cbWndExtra: 0,
+                hInstance: hinstance,
+                hIcon: 0, hCursor: LoadCursorW(0, IDC_ARROW),
+                hbrBackground: (COLOR_BTNFACE + 1) as isize,
+                lpszMenuName: std::ptr::null(),
+                lpszClassName: class_name.as_ptr(),
+            };
+            RegisterClassW(&wc);
+
+            // 屏幕居中偏上
+            let screen_w = GetSystemMetrics(SM_CXSCREEN);
+            let dlg_w = 420;
+            let dlg_h = 100;
+            let x = (screen_w - dlg_w) / 2;
+            let y = 60;
+
+            let hwnd = CreateWindowExW(
+                WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+                class_name.as_ptr(),
+                "纠正识别结果\0".encode_utf16().collect::<Vec<u16>>().as_ptr(),
+                WS_POPUP | WS_VISIBLE | WS_CAPTION,
+                x, y, dlg_w, dlg_h,
+                0, 0, hinstance, std::ptr::null(),
+            );
+
+            if hwnd == 0 { return; }
+
+            // 创建 Edit 控件
+            let edit_class: Vec<u16> = "EDIT\0".encode_utf16().collect();
+            let edit_text: Vec<u16> = prefill_owned.encode_utf16().chain(Some(0)).collect();
+            let hedit = CreateWindowExW(
+                WS_EX_CLIENTEDGE,
+                edit_class.as_ptr(),
+                edit_text.as_ptr(),
+                WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL as u32,
+                10, 10, dlg_w - 20, 24,
+                hwnd, 1001 as isize, hinstance, std::ptr::null(),
+            );
+
+            // 设置字体
+            let font_name: Vec<u16> = "Microsoft YaHei\0".encode_utf16().collect();
+            let hfont = CreateFontW(
+                -14, 0, 0, 0, FW_NORMAL as i32, 0, 0, 0,
+                DEFAULT_CHARSET as u32, OUT_DEFAULT_PRECIS as u32,
+                CLIP_DEFAULT_PRECIS as u32, CLEARTYPE_QUALITY as u32,
+                DEFAULT_PITCH as u32, font_name.as_ptr(),
+            );
+            SendMessageW(hedit, WM_SETFONT, hfont as usize, 1);
+
+            // 选中全部文字
+            SendMessageW(hedit, 0x00B1, 0, -1_isize); // EM_SETSEL = 0x00B1
+            SetFocus(hedit);
+
+            // 确认按钮
+            let btn_class: Vec<u16> = "BUTTON\0".encode_utf16().collect();
+            let btn_ok_text: Vec<u16> = "确认\0".encode_utf16().collect();
+            let btn_cancel_text: Vec<u16> = "取消\0".encode_utf16().collect();
+            CreateWindowExW(
+                0, btn_class.as_ptr(), btn_ok_text.as_ptr(),
+                WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON as u32,
+                dlg_w - 170, 45, 75, 28,
+                hwnd, 1 as isize, hinstance, std::ptr::null(), // IDOK = 1
+            );
+            CreateWindowExW(
+                0, btn_class.as_ptr(), btn_cancel_text.as_ptr(),
+                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON as u32,
+                dlg_w - 85, 45, 75, 28,
+                hwnd, 2 as isize, hinstance, std::ptr::null(), // IDCANCEL = 2
+            );
+
+            // 消息循环
+            let mut msg: MSG = std::mem::zeroed();
+            loop {
+                let ret = GetMessageW(&mut msg, 0, 0, 0);
+                if ret <= 0 { break; }
+
+                // 检测 Enter/Escape
+                if msg.message == WM_KEYDOWN {
+                    if msg.wParam == VK_RETURN as usize {
+                        // 确认
+                        let mut buf = vec![0u16; 1024];
+                        let len = GetWindowTextW(hedit, buf.as_mut_ptr(), buf.len() as i32);
+                        let text = String::from_utf16_lossy(&buf[..len as usize]);
+                        *result_clone.lock().unwrap() = Some(text);
+                        DestroyWindow(hwnd);
+                        break;
+                    }
+                    if msg.wParam == VK_ESCAPE as usize {
+                        // 取消
+                        DestroyWindow(hwnd);
+                        break;
+                    }
+                }
+
+                // 检测按钮点击
+                if msg.message == WM_COMMAND {
+                    let id = msg.wParam & 0xFFFF;
+                    if id == 1 { // IDOK
+                        let mut buf = vec![0u16; 1024];
+                        let len = GetWindowTextW(hedit, buf.as_mut_ptr(), buf.len() as i32);
+                        let text = String::from_utf16_lossy(&buf[..len as usize]);
+                        *result_clone.lock().unwrap() = Some(text);
+                        DestroyWindow(hwnd);
+                        break;
+                    }
+                    if id == 2 { // IDCANCEL
+                        DestroyWindow(hwnd);
+                        break;
+                    }
+                }
+
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+
+            DeleteObject(hfont as isize);
+        }
+    });
+
+    let _ = handle.join();
+    let guard = result.lock().unwrap();
+    guard.clone()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn show_correction_dialog(_prefill: &str) -> Option<String> {
+    None
 }
