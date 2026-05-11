@@ -50,7 +50,7 @@ impl AsrEngine {
                     rconfig.decoding_method = Some("modified_beam_search".to_string());
                     rconfig.max_active_paths = 4;
                     rconfig.hotwords_file = Some(bpe_path);
-                    rconfig.hotwords_score = 2.0;
+                    rconfig.hotwords_score = 3.0;
                 }
                 Err(e) => log::warn!("热词加载失败: {}", e),
             }
@@ -111,6 +111,9 @@ impl AsrEngine {
 }
 
 // ═══ 热词 BPE 转换 ═══
+// hotwords.txt 支持两种格式：
+//   编程          （使用全局 hotwords_score）
+//   编程 4.0      （使用自定义权重 4.0）
 
 fn prepare_hotwords_bpe(src: &Path, model_dir: &Path) -> Result<String> {
     let content = std::fs::read_to_string(src)?;
@@ -119,19 +122,44 @@ fn prepare_hotwords_bpe(src: &Path, model_dir: &Path) -> Result<String> {
     let mut count = 0;
 
     for line in content.lines() {
-        let word = line.trim();
-        if word.is_empty() || word.starts_with('#') { continue; }
-        let bpe_line = word_to_bpe_tokens(word);
-        if !bpe_line.is_empty() {
-            output.push_str(&bpe_line);
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') { continue; }
+
+        // 解析 "编程 4.0" 或 "编程"
+        let (word, weight) = parse_hotword_line(line);
+        if word.is_empty() { continue; }
+
+        let bpe_tokens = word_to_bpe_tokens(&word);
+        if bpe_tokens.is_empty() { continue; }
+
+        // Sherpa-ONNX 格式: "编 程 :4.0" 或 "编 程"
+        if let Some(w) = weight {
+            output.push_str(&format!("{} :{}\n", bpe_tokens, w));
+        } else {
+            output.push_str(&bpe_tokens);
             output.push('\n');
-            count += 1;
         }
+        count += 1;
     }
 
     std::fs::write(&bpe_path, &output)?;
     log::info!("热词 BPE: {} 条", count);
     Ok(bpe_path.to_string_lossy().to_string())
+}
+
+/// 解析热词行："编程 4.0" → ("编程", Some("4.0"))
+/// "编程" → ("编程", None)
+fn parse_hotword_line(line: &str) -> (String, Option<String>) {
+    let parts: Vec<&str> = line.rsplitn(2, ' ').collect();
+    if parts.len() == 2 {
+        // 检查最后一个部分是否是数字（权重）
+        let maybe_weight = parts[0].trim();
+        if maybe_weight.parse::<f32>().is_ok() {
+            return (parts[1].trim().to_string(), Some(maybe_weight.to_string()));
+        }
+    }
+    // 没有权重，整行是词
+    (line.to_string(), None)
 }
 
 fn word_to_bpe_tokens(word: &str) -> String {
