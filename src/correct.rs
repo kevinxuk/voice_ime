@@ -42,10 +42,10 @@ impl CorrectionEngine {
         Self { corrections, homophones, bigram, model_dir: model_dir.to_path_buf() }
     }
 
-    /// 对整句做纠错
+    /// 对整句做纠错（先 bigram 统计猜测，再 corrections 精确覆盖）
     pub fn correct(&self, text: &str) -> String {
-        let text = self.apply_corrections(text);
-        self.bigram_correct(&text)
+        let text = self.bigram_correct(text);
+        self.apply_corrections(&text)
     }
 
     /// 记录用户输出（更新 bigram）
@@ -64,21 +64,38 @@ impl CorrectionEngine {
         let diffs = find_diffs(original, corrected);
         if diffs.is_empty() { return; }
 
+        let orig_chars: Vec<char> = original.chars().collect();
+        let corr_chars: Vec<char> = corrected.chars().collect();
+
         for (wrong, right) in &diffs {
-            // 1. 追加到 auto_corrections.txt
+            // 1. 精确映射
             self.append_auto_correction(wrong, right);
-
-            // 2. 更新内存中的 corrections
             self.corrections.insert(wrong.clone(), right.clone());
+            log::info!("📚 学习: {} → {}", wrong, right);
 
-            // 3. bigram 频率调整
+            // 2. 上下文窗口映射（前后各 1 字）
+            if let Some((ctx_w, ctx_r)) = extract_context(&orig_chars, &corr_chars, wrong, right) {
+                if ctx_w != *wrong {
+                    self.append_auto_correction(&ctx_w, &ctx_r);
+                    self.corrections.insert(ctx_w.clone(), ctx_r.clone());
+                    log::info!("📚 学习(上下文): {} → {}", ctx_w, ctx_r);
+                }
+
+                // 3. 同音泛化（基于上下文窗口）
+                let variants = self.generate_homophone_variants(&ctx_w, &ctx_r, wrong, right);
+                for (vw, vr) in &variants {
+                    self.append_auto_correction(vw, vr);
+                    self.corrections.insert(vw.clone(), vr.clone());
+                }
+                if !variants.is_empty() {
+                    log::info!("📚 同音泛化: {} 条", variants.len());
+                }
+            }
+
+            // 4. bigram 频率调整 + 热词
             self.bigram.adjust_text(wrong, -10);
             self.bigram.adjust_text(right, 10);
-
-            // 4. 追加热词
             self.append_hotword(right);
-
-            log::info!("📚 学习: {} → {}", wrong, right);
         }
     }
 
@@ -107,14 +124,46 @@ impl CorrectionEngine {
         }
     }
 
+    /// 基于上下文窗口生成同音字变体
+    /// ctx_wrong="就相看", ctx_right="就想看", wrong="相", right="想"
+    /// → [("就象看","就想看"), ("就像看","就想看"), ("就向看","就想看")]
+    fn generate_homophone_variants(
+        &self,
+        ctx_wrong: &str,
+        ctx_right: &str,
+        wrong: &str,
+        _right: &str,
+    ) -> Vec<(String, String)> {
+        let mut variants = Vec::new();
+        let wrong_chars: Vec<char> = wrong.chars().collect();
+        for &wc in &wrong_chars {
+            if let Some(homos) = self.homophones.get(&wc) {
+                for &alt in homos {
+                    if alt == wc { continue; }
+                    // 构造变体：把 ctx_wrong 中对应位置的字替换为同音字
+                    let alt_ctx = ctx_wrong.replace(wc, &alt.to_string());
+                    if alt_ctx != *ctx_wrong && alt_ctx != *ctx_right {
+                        variants.push((alt_ctx, ctx_right.to_string()));
+                    }
+                }
+            }
+        }
+
+        variants
+    }
+
     // ═══ 内部纠错 ═══
 
     fn apply_corrections(&self, text: &str) -> String {
         let mut result = text.to_string();
         for (wrong, right) in &self.corrections {
             if result.contains(wrong.as_str()) {
+                log::debug!("纠错命中: '{}' → '{}'", wrong, right);
                 result = result.replace(wrong.as_str(), right.as_str());
             }
+        }
+        if result != text {
+            log::info!("📝 纠错: {} → {}", text, result);
         }
         result
     }
@@ -161,6 +210,49 @@ impl CorrectionEngine {
 }
 
 /// 对比两个字符串，找出被替换的片段
+/// 提取差异位置的上下文（前后各 1 字）
+/// orig="我就相看看", diff "相"→"想" → ("就相看", "就想看")
+fn extract_context(
+    orig_chars: &[char],
+    corr_chars: &[char],
+    wrong: &str,
+    right: &str,
+) -> Option<(String, String)> {
+    let wrong_chars: Vec<char> = wrong.chars().collect();
+    if wrong_chars.is_empty() { return None; }
+
+    // 在 orig 中找到 wrong 的起始位置
+    let wlen = wrong_chars.len();
+    let mut pos = None;
+    for i in 0..=orig_chars.len().saturating_sub(wlen) {
+        if orig_chars[i..i + wlen] == wrong_chars[..] {
+            pos = Some(i);
+            break;
+        }
+    }
+    let start = pos?;
+
+    // 上下文窗口：前 1 字 + wrong + 后 1 字
+    let ctx_start = if start > 0 { start - 1 } else { start };
+    let ctx_end = (start + wlen + 1).min(orig_chars.len());
+
+    let ctx_wrong: String = orig_chars[ctx_start..ctx_end].iter().collect();
+
+    // 对应的正确上下文
+    let right_chars: Vec<char> = right.chars().collect();
+    let rlen = right_chars.len();
+
+    // 在 corr 中找对应位置
+    let corr_start = if start > 0 { start - 1 } else { start };
+    let corr_end = (start + rlen + 1).min(corr_chars.len());
+    if corr_end > corr_chars.len() { return None; }
+
+    let ctx_right: String = corr_chars[corr_start..corr_end].iter().collect();
+
+    if ctx_wrong == ctx_right { return None; }
+    Some((ctx_wrong, ctx_right))
+}
+
 pub fn find_diffs(original: &str, corrected: &str) -> Vec<(String, String)> {
     let orig: Vec<char> = original.chars().collect();
     let corr: Vec<char> = corrected.chars().collect();

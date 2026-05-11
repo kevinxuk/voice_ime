@@ -124,7 +124,7 @@ impl App {
                     }
                     hotkey::HotkeyEvent::EscPressed => {
                         // 预览状态下按 Esc → 取消输出，弹出纠错对话框
-                        if let AppState::Previewing { text, original_raw, .. } = &state {
+                        if let AppState::Previewing { text, original_raw: _, .. } = &state {
                             self.preview.hide();
                             let prefill = text.clone();
 
