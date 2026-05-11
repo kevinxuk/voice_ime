@@ -8,11 +8,11 @@ name = "voice_ime"
 path = "src/main.rs"
 
 [profile.release]
-opt-level = "z"        # 最小体积
-lto = true             # 全链接优化
-codegen-units = 1      # 单编译单元，最大优化
-panic = "abort"        # 去掉 unwind 栈
-strip = true           # 去符号表
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
 
 [dependencies]
 sherpa-onnx = "1.13"
@@ -26,8 +26,13 @@ anyhow = "1.0"
 log = "0.4"
 simplelog = "0.12"
 
+# GUI 波纹窗口
+minifb = "0.27"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
 ] }

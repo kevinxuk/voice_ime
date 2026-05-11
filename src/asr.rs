@@ -44,8 +44,11 @@ impl AsrEngine {
         rconfig.rule3_min_utterance_length = 20.0;
 
         if cfg.hotwords_file().exists() {
+            // 热词要求 modified_beam_search
+            rconfig.decoding_method = Some("modified_beam_search".to_string());
+            rconfig.max_active_paths = 4;
             rconfig.hotwords_file = Some(cfg.hotwords_file_str());
-            rconfig.hotwords_score = 1.5;
+            rconfig.hotwords_score = 2.0;
         }
 
         let recg = OnlineRecognizer::create(&rconfig)

@@ -98,7 +98,7 @@ impl Default for VoiceDetect {
     fn default() -> Self { Self::new(&AudioConfig::default()) }
 }
 
-fn compute_energy(samples: &[f32]) -> f32 {
+pub fn compute_energy(samples: &[f32]) -> f32 {
     if samples.is_empty() { return 0.0; }
     let sq: f32 = samples.iter().map(|s| s * s).sum();
     (sq / samples.len() as f32).sqrt()
