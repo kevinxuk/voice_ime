@@ -11,8 +11,6 @@ use std::io::{Read, Write, BufRead, BufReader};
 use std::net::TcpListener;
 use std::path::Path;
 use std::thread;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 const PORT: u16 = 17630;
 

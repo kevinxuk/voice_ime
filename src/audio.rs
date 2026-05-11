@@ -150,3 +150,10 @@ fn resample(data: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     }
     out
 }
+
+/// 计算音频 RMS 能量（从 vad.rs 迁移过来）
+pub fn compute_energy(samples: &[f32]) -> f32 {
+    if samples.is_empty() { return 0.0; }
+    let sq: f32 = samples.iter().map(|s| s * s).sum();
+    (sq / samples.len() as f32).sqrt()
+}

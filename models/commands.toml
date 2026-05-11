@@ -83,14 +83,3 @@ target = "Ctrl+S"
 triggers = ["全选"]
 action = "hotkey"
 target = "Ctrl+A"
-
-# ═══ 内置命令 ═══
-[[commands]]
-triggers = ["暂停监听", "停止监听"]
-action = "builtin"
-target = "pause"
-
-[[commands]]
-triggers = ["恢复监听", "开始监听", "继续监听"]
-action = "builtin"
-target = "resume"

@@ -11,14 +11,6 @@ use minifb::{Window, WindowOptions, MouseButton};
 const WIN_W: usize = 160;
 const WIN_H: usize = 28;
 
-/// UI 阶段
-#[repr(u8)]
-pub enum UiPhase {
-    Loading = 0,   // 模型加载中
-    Ready = 1,     // 就绪，等待语音
-    Listening = 2, // 正在识别
-}
-
 /// 波纹样式
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -77,21 +69,8 @@ impl UiState {
     pub fn set_phase_loading(&self) {
         self.phase.store(0, Ordering::Relaxed);
     }
-    pub fn set_phase_ready(&self) {
-        self.phase.store(1, Ordering::Relaxed);
-    }
-    pub fn set_phase_listening(&self) {
-        self.phase.store(2, Ordering::Relaxed);
-    }
-    pub fn set_phase_paused(&self) {
-        self.phase.store(3, Ordering::Relaxed);
-    }
     pub fn set_progress(&self, pct: u8) {
         self.progress.store(pct.min(100), Ordering::Relaxed);
-    }
-    /// 触发 UI 闪烁（500ms ≈ 15 帧 @ 30fps）
-    pub fn trigger_flash(&self) {
-        self.flash_frames.store(15, Ordering::Relaxed);
     }
 }
 

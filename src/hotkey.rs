@@ -114,3 +114,34 @@ pub fn spawn_warning_dialog_async(message: String) {
 
 #[cfg(not(target_os = "windows"))]
 pub fn spawn_warning_dialog_async(_: String) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_hotkey_ctrl_alt_v() {
+        let (mods, vk) = parse_hotkey("Ctrl+Alt+V").unwrap();
+        assert_eq!(mods, vec![0x11, 0x12]); // VK_CONTROL, VK_MENU
+        assert_eq!(vk, 0x56); // V
+    }
+
+    #[test]
+    fn test_parse_hotkey_f1() {
+        let (mods, vk) = parse_hotkey("F1").unwrap();
+        assert!(mods.is_empty());
+        assert_eq!(vk, 0x70);
+    }
+
+    #[test]
+    fn test_parse_hotkey_shift_a() {
+        let (mods, vk) = parse_hotkey("Shift+A").unwrap();
+        assert_eq!(mods, vec![0x10]); // VK_SHIFT
+        assert_eq!(vk, 0x41); // A
+    }
+
+    #[test]
+    fn test_parse_hotkey_no_main_key() {
+        assert!(parse_hotkey("Ctrl+Alt").is_err());
+    }
+}

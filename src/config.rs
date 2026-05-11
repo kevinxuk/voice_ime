@@ -1,4 +1,4 @@
-// src/config.rs
+// src/config.rs — 配置管理（支持 Transducer / SenseVoice 双模型）
 
 use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
@@ -13,19 +13,33 @@ pub struct AppConfig {
     pub hotkey: HotkeyConfig,
 }
 
+/// ASR 配置（支持 transducer / sense_voice 两种模型）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsrConfig {
     pub n_threads: i32,
-    pub decoding_method: String,
+    /// "transducer" | "sense_voice"
     pub model_type: String,
+    /// Transducer 模型文件（model_type = "transducer" 时使用）
+    #[serde(default)]
+    pub encoder: String,
+    #[serde(default)]
+    pub decoder: String,
+    #[serde(default)]
+    pub joiner: String,
+    /// SenseVoice 模型文件（model_type = "sense_voice" 时使用）
+    #[serde(default)]
+    pub sense_voice_model: String,
 }
 
 impl Default for AsrConfig {
     fn default() -> Self {
         Self {
             n_threads: 4,
-            decoding_method: "greedy_search".into(),
             model_type: "transducer".into(),
+            encoder: "encoder-epoch-99-avg-1.int8.onnx".into(),
+            decoder: "decoder-epoch-99-avg-1.onnx".into(),
+            joiner: "joiner-epoch-99-avg-1.int8.onnx".into(),
+            sense_voice_model: "model.int8.onnx".into(),
         }
     }
 }
@@ -38,7 +52,6 @@ pub struct AudioConfig {
     pub silence_duration_ms: u64,
     pub min_speech_duration_ms: u64,
     pub buffer_frames: u32,
-    pub use_vad_endpoint: bool,
 }
 
 impl Default for AudioConfig {
@@ -50,23 +63,18 @@ impl Default for AudioConfig {
             silence_duration_ms: 500,
             min_speech_duration_ms: 300,
             buffer_frames: 1024,
-            use_vad_endpoint: false,
         }
     }
 }
 
-/// 热键配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HotkeyConfig {
-    /// 切换监听（暂停/恢复），例如 "Ctrl+Alt+V"
     pub toggle: String,
 }
 
 impl Default for HotkeyConfig {
     fn default() -> Self {
-        Self {
-            toggle: "Ctrl+Alt+V".into(),
-        }
+        Self { toggle: "Ctrl+Alt+V".into() }
     }
 }
 
@@ -101,24 +109,28 @@ impl AppConfig {
             .join("models")
     }
 
-    pub fn model_dir_str(&self) -> String {
-        self.model_dir().to_string_lossy().to_string()
-    }
-
+    pub fn model_dir_str(&self) -> String { self.model_dir().to_string_lossy().to_string() }
     pub fn tokens_file(&self) -> PathBuf { self.model_dir().join("tokens.txt") }
     pub fn tokens_file_str(&self) -> String { self.tokens_file().to_string_lossy().to_string() }
     pub fn hotwords_file(&self) -> PathBuf { self.model_dir().join("hotwords.txt") }
-    pub fn hotwords_file_str(&self) -> String { self.hotwords_file().to_string_lossy().to_string() }
     pub fn commands_file(&self) -> PathBuf { self.model_dir().join("commands.toml") }
+
+    pub fn is_sense_voice(&self) -> bool {
+        self.asr.model_type.to_lowercase() == "sense_voice"
+            || self.asr.model_type.to_lowercase() == "sensevoice"
+    }
 
     pub fn validate(&self) -> anyhow::Result<()> {
         let dir = self.model_dir();
-        if !dir.exists() {
-            anyhow::bail!("模型目录不存在: {}", dir.display());
-        }
-        let tokens = self.tokens_file();
-        if !tokens.exists() {
-            anyhow::bail!("tokens.txt 不存在: {}", tokens.display());
+        if !dir.exists() { anyhow::bail!("模型目录不存在: {}", dir.display()); }
+        if !self.tokens_file().exists() { anyhow::bail!("tokens.txt 不存在: {}", self.tokens_file().display()); }
+        // 检查模型文件
+        if self.is_sense_voice() {
+            let m = dir.join(&self.asr.sense_voice_model);
+            if !m.exists() { anyhow::bail!("SenseVoice 模型不存在: {}", m.display()); }
+        } else {
+            let e = dir.join(&self.asr.encoder);
+            if !e.exists() { anyhow::bail!("encoder 不存在: {}", e.display()); }
         }
         Ok(())
     }

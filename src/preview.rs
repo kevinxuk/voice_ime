@@ -106,7 +106,6 @@ fn run_preview_thread(
 ) {
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
     use windows_sys::Win32::Graphics::Gdi::*;
-    use windows_sys::Win32::Foundation::*;
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 
     unsafe {
@@ -273,7 +272,7 @@ unsafe extern "system" fn preview_wndproc(
             if let Some(s) = state {
                 // 背景
                 let bg_brush = CreateSolidBrush(0x001E1E14); // RGB(20, 30, 30)
-                let mut rc = RECT { left: 0, top: 0, right: PREVIEW_W, bottom: PREVIEW_H };
+                let rc = RECT { left: 0, top: 0, right: PREVIEW_W, bottom: PREVIEW_H };
                 FillRect(hdc, &rc, bg_brush);
                 DeleteObject(bg_brush as isize);
 
