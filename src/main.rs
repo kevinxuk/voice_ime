@@ -315,20 +315,69 @@ fn show_correction_dialog(prefill: &str) -> Option<String> {
 
     use std::sync::{Arc, Mutex};
 
+    // 用静态变量存储 edit 控件句柄和结果（WndProc 需要访问）
+    static mut HEDIT: isize = 0;
+    static mut DLG_RESULT: i32 = 0; // 0=pending, 1=ok, 2=cancel
+
+    unsafe extern "system" fn dlg_wndproc(
+        hwnd: isize, msg: u32, wparam: usize, lparam: isize,
+    ) -> isize {
+        use windows_sys::Win32::UI::WindowsAndMessaging::*;
+
+        match msg {
+            WM_COMMAND => {
+                let id = (wparam & 0xFFFF) as i32;
+                let notify = ((wparam >> 16) & 0xFFFF) as i32;
+                // BN_CLICKED = 0
+                if id == 1 && notify == 0 { // 确认按钮
+                    DLG_RESULT = 1;
+                    PostQuitMessage(0);
+                    return 0;
+                }
+                if id == 2 && notify == 0 { // 取消按钮
+                    DLG_RESULT = 2;
+                    PostQuitMessage(0);
+                    return 0;
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+            WM_KEYDOWN => {
+                if wparam == 0x0D { // VK_RETURN
+                    DLG_RESULT = 1;
+                    PostQuitMessage(0);
+                    return 0;
+                }
+                if wparam == 0x1B { // VK_ESCAPE
+                    DLG_RESULT = 2;
+                    PostQuitMessage(0);
+                    return 0;
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+            WM_CLOSE => {
+                DLG_RESULT = 2;
+                PostQuitMessage(0);
+                0
+            }
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
+
     let result: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let result_clone = result.clone();
     let prefill_owned = prefill.to_string();
 
-    // 在独立线程运行对话框（避免阻塞主消息循环）
     let handle = std::thread::spawn(move || {
         unsafe {
-            let hinstance = GetModuleHandleW(std::ptr::null());
+            DLG_RESULT = 0;
+            HEDIT = 0;
 
-            // 注册窗口类
-            let class_name: Vec<u16> = "VoiceIME_Correction\0".encode_utf16().collect();
+            let hinstance = GetModuleHandleW(std::ptr::null());
+            let class_name: Vec<u16> = "VoiceIME_CorrDlg\0".encode_utf16().collect();
+
             let wc = WNDCLASSW {
                 style: CS_HREDRAW | CS_VREDRAW,
-                lpfnWndProc: Some(DefWindowProcW),
+                lpfnWndProc: Some(dlg_wndproc),
                 cbClsExtra: 0, cbWndExtra: 0,
                 hInstance: hinstance,
                 hIcon: 0, hCursor: LoadCursorW(0, IDC_ARROW),
@@ -338,113 +387,90 @@ fn show_correction_dialog(prefill: &str) -> Option<String> {
             };
             RegisterClassW(&wc);
 
-            // 屏幕居中偏上
             let screen_w = GetSystemMetrics(SM_CXSCREEN);
             let dlg_w = 420;
-            let dlg_h = 100;
+            let dlg_h = 110;
             let x = (screen_w - dlg_w) / 2;
             let y = 60;
 
+            let title: Vec<u16> = "纠正识别结果 (Enter=确认, Esc=取消)\0".encode_utf16().collect();
             let hwnd = CreateWindowExW(
                 WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
                 class_name.as_ptr(),
-                "纠正识别结果\0".encode_utf16().collect::<Vec<u16>>().as_ptr(),
-                WS_POPUP | WS_VISIBLE | WS_CAPTION,
+                title.as_ptr(),
+                WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU,
                 x, y, dlg_w, dlg_h,
                 0, 0, hinstance, std::ptr::null(),
             );
-
             if hwnd == 0 { return; }
 
-            // 创建 Edit 控件
+            // Edit 控件
             let edit_class: Vec<u16> = "EDIT\0".encode_utf16().collect();
             let edit_text: Vec<u16> = prefill_owned.encode_utf16().chain(Some(0)).collect();
             let hedit = CreateWindowExW(
                 WS_EX_CLIENTEDGE,
                 edit_class.as_ptr(),
                 edit_text.as_ptr(),
-                WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL as u32,
-                10, 10, dlg_w - 20, 24,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL as u32,
+                10, 10, dlg_w - 20, 26,
                 hwnd, 1001 as isize, hinstance, std::ptr::null(),
             );
+            HEDIT = hedit;
 
-            // 设置字体
+            // 字体
             let font_name: Vec<u16> = "Microsoft YaHei\0".encode_utf16().collect();
             let hfont = CreateFontW(
-                -14, 0, 0, 0, FW_NORMAL as i32, 0, 0, 0,
+                -15, 0, 0, 0, FW_NORMAL as i32, 0, 0, 0,
                 DEFAULT_CHARSET as u32, OUT_DEFAULT_PRECIS as u32,
                 CLIP_DEFAULT_PRECIS as u32, CLEARTYPE_QUALITY as u32,
                 DEFAULT_PITCH as u32, font_name.as_ptr(),
             );
             SendMessageW(hedit, WM_SETFONT, hfont as usize, 1);
-
-            // 选中全部文字
-            SendMessageW(hedit, 0x00B1, 0, -1_isize); // EM_SETSEL = 0x00B1
+            SendMessageW(hedit, 0x00B1, 0, -1_isize); // EM_SETSEL 全选
             SetFocus(hedit);
 
-            // 确认按钮
+            // 按钮
             let btn_class: Vec<u16> = "BUTTON\0".encode_utf16().collect();
-            let btn_ok_text: Vec<u16> = "确认\0".encode_utf16().collect();
-            let btn_cancel_text: Vec<u16> = "取消\0".encode_utf16().collect();
-            CreateWindowExW(
-                0, btn_class.as_ptr(), btn_ok_text.as_ptr(),
-                WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON as u32,
-                dlg_w - 170, 45, 75, 28,
-                hwnd, 1 as isize, hinstance, std::ptr::null(), // IDOK = 1
+            let btn_ok: Vec<u16> = "确认(Enter)\0".encode_utf16().collect();
+            let btn_cancel: Vec<u16> = "取消(Esc)\0".encode_utf16().collect();
+
+            let btn_ok_h = CreateWindowExW(
+                0, btn_class.as_ptr(), btn_ok.as_ptr(),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON as u32,
+                dlg_w - 220, 48, 100, 30,
+                hwnd, 1 as isize, hinstance, std::ptr::null(),
             );
-            CreateWindowExW(
-                0, btn_class.as_ptr(), btn_cancel_text.as_ptr(),
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON as u32,
-                dlg_w - 85, 45, 75, 28,
-                hwnd, 2 as isize, hinstance, std::ptr::null(), // IDCANCEL = 2
+            let btn_cancel_h = CreateWindowExW(
+                0, btn_class.as_ptr(), btn_cancel.as_ptr(),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON as u32,
+                dlg_w - 110, 48, 100, 30,
+                hwnd, 2 as isize, hinstance, std::ptr::null(),
             );
+            // 按钮也设字体
+            SendMessageW(btn_ok_h, WM_SETFONT, hfont as usize, 1);
+            SendMessageW(btn_cancel_h, WM_SETFONT, hfont as usize, 1);
 
             // 消息循环
             let mut msg: MSG = std::mem::zeroed();
-            loop {
-                let ret = GetMessageW(&mut msg, 0, 0, 0);
-                if ret <= 0 { break; }
-
-                // 检测 Enter/Escape
-                if msg.message == WM_KEYDOWN {
-                    if msg.wParam == VK_RETURN as usize {
-                        // 确认
-                        let mut buf = vec![0u16; 1024];
-                        let len = GetWindowTextW(hedit, buf.as_mut_ptr(), buf.len() as i32);
-                        let text = String::from_utf16_lossy(&buf[..len as usize]);
-                        *result_clone.lock().unwrap() = Some(text);
-                        DestroyWindow(hwnd);
-                        break;
-                    }
-                    if msg.wParam == VK_ESCAPE as usize {
-                        // 取消
-                        DestroyWindow(hwnd);
-                        break;
-                    }
+            while GetMessageW(&mut msg, 0, 0, 0) > 0 {
+                // 让 Tab 键在控件间切换
+                if IsDialogMessageW(hwnd, &msg) == 0 {
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
                 }
-
-                // 检测按钮点击
-                if msg.message == WM_COMMAND {
-                    let id = msg.wParam & 0xFFFF;
-                    if id == 1 { // IDOK
-                        let mut buf = vec![0u16; 1024];
-                        let len = GetWindowTextW(hedit, buf.as_mut_ptr(), buf.len() as i32);
-                        let text = String::from_utf16_lossy(&buf[..len as usize]);
-                        *result_clone.lock().unwrap() = Some(text);
-                        DestroyWindow(hwnd);
-                        break;
-                    }
-                    if id == 2 { // IDCANCEL
-                        DestroyWindow(hwnd);
-                        break;
-                    }
-                }
-
-                TranslateMessage(&msg);
-                DispatchMessageW(&msg);
             }
 
+            // 读取结果
+            if DLG_RESULT == 1 {
+                let mut buf = vec![0u16; 2048];
+                let len = GetWindowTextW(hedit, buf.as_mut_ptr(), buf.len() as i32);
+                let text = String::from_utf16_lossy(&buf[..len as usize]);
+                *result_clone.lock().unwrap() = Some(text);
+            }
+
+            DestroyWindow(hwnd);
             DeleteObject(hfont as isize);
+            UnregisterClassW(class_name.as_ptr(), hinstance);
         }
     });
 
