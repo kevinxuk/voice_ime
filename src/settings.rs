@@ -146,14 +146,14 @@ fn handle_save(exe_dir: &Path, model_dir: &Path, body: &str) -> anyhow::Result<(
 }
 
 fn generate_settings_html(exe_dir: &Path, model_dir: &Path) -> String {
-    // 读取当前配置内容
-    let config_toml = std::fs::read_to_string(exe_dir.join("voice_ime.toml"))
-        .unwrap_or_else(|_| default_config_toml());
-    let hotwords = std::fs::read_to_string(model_dir.join("hotwords.txt"))
+    // 读取当前配置内容（去除 BOM）
+    let config_toml = read_file_utf8(&exe_dir.join("voice_ime.toml"))
+        .unwrap_or_else(|| default_config_toml());
+    let hotwords = read_file_utf8(&model_dir.join("hotwords.txt"))
         .unwrap_or_default();
-    let corrections = std::fs::read_to_string(model_dir.join("corrections.txt"))
+    let corrections = read_file_utf8(&model_dir.join("corrections.txt"))
         .unwrap_or_default();
-    let commands = std::fs::read_to_string(model_dir.join("commands.toml"))
+    let commands = read_file_utf8(&model_dir.join("commands.toml"))
         .unwrap_or_default();
 
     format!(r#"<!DOCTYPE html>
@@ -263,6 +263,18 @@ fn html_escape(s: &str) -> String {
      .replace('"', "&quot;")
 }
 
+/// 读取文件为 UTF-8 字符串，自动去除 BOM
+fn read_file_utf8(path: &Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    // 去除 UTF-8 BOM (EF BB BF)
+    let content = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        &bytes[3..]
+    } else {
+        &bytes
+    };
+    Some(String::from_utf8_lossy(content).to_string())
+}
+
 fn parse_form(body: &str) -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
     for pair in body.split('&') {
@@ -274,24 +286,33 @@ fn parse_form(body: &str) -> std::collections::HashMap<String, String> {
 }
 
 fn url_decode(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '%' => {
-                let hex: String = chars.by_ref().take(2).collect();
-                if let Ok(byte) = u8::from_str_radix(&hex, 16) {
-                    result.push(byte as char);
+    // 先将 %XX 转为原始字节，+ 转为空格
+    let mut bytes: Vec<u8> = Vec::with_capacity(s.len());
+    let mut chars = s.as_bytes().iter();
+
+    while let Some(&b) = chars.next() {
+        match b {
+            b'%' => {
+                let h1 = chars.next().copied().unwrap_or(0);
+                let h2 = chars.next().copied().unwrap_or(0);
+                let hex = [h1, h2];
+                if let Ok(val) = u8::from_str_radix(
+                    std::str::from_utf8(&hex).unwrap_or("00"), 16
+                ) {
+                    bytes.push(val);
                 } else {
-                    result.push('%');
-                    result.push_str(&hex);
+                    bytes.push(b'%');
+                    bytes.push(h1);
+                    bytes.push(h2);
                 }
             }
-            '+' => result.push(' '),
-            _ => result.push(c),
+            b'+' => bytes.push(b' '),
+            _ => bytes.push(b),
         }
     }
-    // 处理 UTF-8 编码（%E4%B8%AD → 中）
-    let bytes: Vec<u8> = result.bytes().collect();
-    String::from_utf8(bytes).unwrap_or_else(|_| result)
+
+    // 字节序列按 UTF-8 解码（正确处理中文）
+    String::from_utf8(bytes).unwrap_or_else(|e| {
+        String::from_utf8_lossy(e.as_bytes()).to_string()
+    })
 }
