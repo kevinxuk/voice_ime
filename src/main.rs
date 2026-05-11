@@ -148,6 +148,20 @@ fn main() {
                 }
                 hotkey::HotkeyEvent::KeyUp => {
                     if let AppState::Recording { stream, start } = &state {
+                        // 先消费 channel 中所有剩余音频
+                        while let Ok(samples) = audio_rx.try_recv() {
+                            if !samples.is_empty() {
+                                asr.feed_and_decode(stream, &samples);
+                            }
+                        }
+                        // 等待一小段时间让最后的音频到达
+                        thread::sleep(Duration::from_millis(100));
+                        while let Ok(samples) = audio_rx.try_recv() {
+                            if !samples.is_empty() {
+                                asr.feed_and_decode(stream, &samples);
+                            }
+                        }
+
                         // 停止录音 → 获取最终结果
                         let raw = asr.finish_stream(stream);
                         let dur = start.elapsed().as_millis();
