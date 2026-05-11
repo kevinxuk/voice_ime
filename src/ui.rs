@@ -50,10 +50,12 @@ pub struct UiState {
     pub style: Arc<AtomicU8>,
     /// 程序退出
     pub quit: Arc<AtomicBool>,
-    /// UI 阶段: 0=加载中 1=就绪 2=说话中
+    /// UI 阶段: 0=加载中 1=就绪 2=说话中 3=暂停
     pub phase: Arc<AtomicU8>,
     /// 加载进度 (0~100)
     pub progress: Arc<AtomicU8>,
+    /// 黄色闪烁剩余帧数（命令执行反馈）
+    pub flash_frames: Arc<AtomicU8>,
 }
 
 impl UiState {
@@ -62,8 +64,9 @@ impl UiState {
             energy: Arc::new(AtomicU8::new(0)),
             style: Arc::new(AtomicU8::new(0)),
             quit,
-            phase: Arc::new(AtomicU8::new(0)), // 0 = Loading
+            phase: Arc::new(AtomicU8::new(0)),
             progress: Arc::new(AtomicU8::new(0)),
+            flash_frames: Arc::new(AtomicU8::new(0)),
         }
     }
 
@@ -76,8 +79,15 @@ impl UiState {
     pub fn set_phase_listening(&self) {
         self.phase.store(2, Ordering::Relaxed);
     }
+    pub fn set_phase_paused(&self) {
+        self.phase.store(3, Ordering::Relaxed);
+    }
     pub fn set_progress(&self, pct: u8) {
         self.progress.store(pct.min(100), Ordering::Relaxed);
+    }
+    /// 触发 UI 闪烁（500ms ≈ 15 帧 @ 30fps）
+    pub fn trigger_flash(&self) {
+        self.flash_frames.store(15, Ordering::Relaxed);
     }
 }
 
@@ -134,8 +144,18 @@ pub fn run_ui(state: UiState) {
         match phase {
             0 => render_loading(&mut buf, WIN_W, WIN_H, progress, frame),
             1 => render_ready(&mut buf, WIN_W, WIN_H, frame),
+            3 => render_paused(&mut buf, WIN_W, WIN_H, frame),
             _ => render_waveform(&mut buf, WIN_W, WIN_H, energy, style, frame),
         }
+
+        // 闪烁覆盖（命令反馈）
+        let flash = state.flash_frames.load(Ordering::Relaxed);
+        if flash > 0 {
+            let alpha = (flash as f32 / 15.0) * 0.5; // 最多 50% 黄色
+            overlay_tint(&mut buf, rgb(255, 220, 0), alpha);
+            state.flash_frames.store(flash - 1, Ordering::Relaxed);
+        }
+
         frame += 1;
 
         window.update_with_buffer(&buf, WIN_W, WIN_H).ok();
@@ -213,6 +233,40 @@ fn render_ready(buf: &mut [u32], w: usize, h: usize, frame: u64) {
     set_px(buf, w, 4, mid_y, dot_color);
     set_px(buf, w, 3, mid_y - 1, dot_color);
     set_px(buf, w, 4, mid_y - 1, dot_color);
+}
+
+// ═══════════════════════════════════════════
+//  渲染: 暂停中
+// ═══════════════════════════════════════════
+
+fn render_paused(buf: &mut [u32], w: usize, h: usize, frame: u64) {
+    let bg = rgb(40, 15, 15);
+    buf.fill(bg);
+    draw_border(buf, w, h, rgb(120, 40, 40));
+
+    let mid_y = h / 2;
+
+    // 暗红色呼吸灯
+    let breath = ((frame as f64 * 0.04).sin() * 0.3 + 0.7) as f32;
+    let r = (200.0 * breath) as u8;
+    let line_color = rgb(r.saturating_sub(100), 30, 30);
+
+    // 中间暗红平直线
+    for x in 14..w - 4 {
+        set_px(buf, w, x, mid_y, line_color);
+    }
+
+    // 左侧 ⏸ 图标（两条竖线）
+    let pause_color = rgb(230, 80, 80);
+    let icon_x = 5;
+    let icon_top = mid_y.saturating_sub(5);
+    let icon_bot = (mid_y + 5).min(h - 2);
+    for y in icon_top..=icon_bot {
+        set_px(buf, w, icon_x, y, pause_color);
+        set_px(buf, w, icon_x + 1, y, pause_color);
+        set_px(buf, w, icon_x + 4, y, pause_color);
+        set_px(buf, w, icon_x + 5, y, pause_color);
+    }
 }
 
 // ═══════════════════════════════════════════
@@ -424,6 +478,14 @@ fn blend(c1: u32, c2: u32, t: f32) -> u32 {
     let g = (((c1 >> 8) & 0xFF) as f32 * (1.0 - t) + ((c2 >> 8) & 0xFF) as f32 * t) as u8;
     let b = ((c1 & 0xFF) as f32 * (1.0 - t) + (c2 & 0xFF) as f32 * t) as u8;
     rgb(r, g, b)
+}
+
+/// 全屏黄色叠加（命令反馈闪烁）
+fn overlay_tint(buf: &mut [u32], tint: u32, alpha: f32) {
+    let a = alpha.clamp(0.0, 1.0);
+    for px in buf.iter_mut() {
+        *px = blend(*px, tint, a);
+    }
 }
 
 fn set_px(buf: &mut [u32], w: usize, x: usize, y: usize, color: u32) {

@@ -1,0 +1,96 @@
+# Voice IME 语音命令配置
+# 说出 triggers 列表中的任一词（完全匹配或去标点后匹配）即可触发命令
+#
+# 格式:
+#   [[commands]]
+#   triggers = ["词1", "词2", ...]
+#   action = "动作类型"
+#   target = "参数"
+#
+# 动作类型:
+#   launch    启动程序, target=exe路径或名称 (从 PATH 搜索)
+#   open_url  打开网址, target=URL
+#   hotkey    模拟快捷键, target="Ctrl+C" 或 "Ctrl+S,Enter" (多步用逗号)
+#   text      输入文本, target=要输入的内容
+#   builtin   内置命令, target=pause|resume|toggle
+#
+# 注意: 命令触发时不会把这段话输入到键盘
+
+# ═══ 系统程序 ═══
+[[commands]]
+triggers = ["打开记事本", "启动记事本"]
+action = "launch"
+target = "notepad.exe"
+
+[[commands]]
+triggers = ["打开计算器"]
+action = "launch"
+target = "calc.exe"
+
+[[commands]]
+triggers = ["打开资源管理器", "打开文件管理器"]
+action = "launch"
+target = "explorer.exe"
+
+[[commands]]
+triggers = ["打开任务管理器"]
+action = "launch"
+target = "taskmgr.exe"
+
+[[commands]]
+triggers = ["打开浏览器", "打开谷歌浏览器"]
+action = "launch"
+target = "chrome.exe"
+
+# ═══ 网址 ═══
+[[commands]]
+triggers = ["打开百度"]
+action = "open_url"
+target = "https://www.baidu.com"
+
+[[commands]]
+triggers = ["打开GitHub", "打开吉特哈勃"]
+action = "open_url"
+target = "https://github.com"
+
+# ═══ 编辑快捷键 ═══
+[[commands]]
+triggers = ["复制", "拷贝"]
+action = "hotkey"
+target = "Ctrl+C"
+
+[[commands]]
+triggers = ["粘贴"]
+action = "hotkey"
+target = "Ctrl+V"
+
+[[commands]]
+triggers = ["剪切"]
+action = "hotkey"
+target = "Ctrl+X"
+
+[[commands]]
+triggers = ["撤销", "撤回"]
+action = "hotkey"
+target = "Ctrl+Z"
+
+[[commands]]
+triggers = ["保存", "存档"]
+action = "hotkey"
+target = "Ctrl+S"
+
+[[commands]]
+triggers = ["全选"]
+action = "hotkey"
+target = "Ctrl+A"
+
+# ═══ 内置命令 ═══
+[[commands]]
+triggers = ["暂停监听", "停止监听"]
+action = "builtin"
+target = "pause"
+
+[[commands]]
+triggers = ["恢复监听", "开始监听", "继续监听"]
+action = "builtin"
+target = "resume"

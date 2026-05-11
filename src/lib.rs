@@ -6,3 +6,5 @@ pub mod asr;
 pub mod output;
 pub mod learn;
 pub mod ui;
+pub mod commands;
+pub mod hotkey;
