@@ -9,3 +9,7 @@ pub mod ui;
 pub mod commands;
 pub mod hotkey;
 pub mod settings;
+pub mod bigram;
+pub mod correct;
+pub mod punctuation;
+pub mod preview;
