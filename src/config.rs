@@ -29,6 +29,9 @@ pub struct AsrConfig {
     /// SenseVoice 模型文件（model_type = "sense_voice" 时使用）
     #[serde(default)]
     pub sense_voice_model: String,
+    /// SenseVoice 专用 tokens 文件
+    #[serde(default)]
+    pub sense_voice_tokens: String,
 }
 
 impl Default for AsrConfig {
@@ -39,7 +42,8 @@ impl Default for AsrConfig {
             encoder: "encoder-epoch-99-avg-1.int8.onnx".into(),
             decoder: "decoder-epoch-99-avg-1.onnx".into(),
             joiner: "joiner-epoch-99-avg-1.int8.onnx".into(),
-            sense_voice_model: "model.int8.onnx".into(),
+            sense_voice_model: "sense_voice_model.int8.onnx".into(),
+            sense_voice_tokens: "sense_voice_tokens.txt".into(),
         }
     }
 }

@@ -81,7 +81,9 @@ impl AsrEngine {
             language: Some("auto".into()),
             use_itn: true,
         };
-        rconfig.model_config.tokens = Some(cfg.tokens_file_str());
+        // SenseVoice 使用独立的 tokens 文件
+        let sv_tokens = format!("{}/{}", md, cfg.asr.sense_voice_tokens);
+        rconfig.model_config.tokens = Some(sv_tokens);
         rconfig.model_config.num_threads = cfg.asr.n_threads;
         rconfig.model_config.provider = Some("cpu".to_string());
 
