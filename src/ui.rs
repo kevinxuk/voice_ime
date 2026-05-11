@@ -1,15 +1,23 @@
 // src/ui.rs — 语音波纹可视化窗口
 //
-// 屏幕上方居中，无标题栏，右键弹出菜单
+// 启动流程: 加载中(进度) → 就绪(平直线) → 说话(波纹动画)
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 
-use minifb::{Window, WindowOptions, MouseButton, MouseMode};
+use minifb::{Window, WindowOptions, MouseButton};
 
 /// 窗口尺寸
-const WIN_W: usize = 120;
+const WIN_W: usize = 160;
 const WIN_H: usize = 28;
+
+/// UI 阶段
+#[repr(u8)]
+pub enum UiPhase {
+    Loading = 0,   // 模型加载中
+    Ready = 1,     // 就绪，等待语音
+    Listening = 2, // 正在识别
+}
 
 /// 波纹样式
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -23,16 +31,11 @@ pub enum WaveStyle {
 
 impl WaveStyle {
     fn from_u8(v: u8) -> Self {
-        match v % 4 {
-            0 => Self::Sine,
-            1 => Self::Bar,
-            2 => Self::Dot,
-            _ => Self::Flat,
-        }
+        match v % 4 { 0 => Self::Sine, 1 => Self::Bar, 2 => Self::Dot, _ => Self::Flat }
     }
 }
 
-/// 右键菜单项 ID
+/// 右键菜单 ID
 const MENU_SINE: u32 = 100;
 const MENU_BAR: u32 = 101;
 const MENU_DOT: u32 = 102;
@@ -41,9 +44,16 @@ const MENU_QUIT: u32 = 200;
 
 /// 共享状态
 pub struct UiState {
+    /// 当前音频能量 (0~255)
     pub energy: Arc<AtomicU8>,
+    /// 波纹样式
     pub style: Arc<AtomicU8>,
+    /// 程序退出
     pub quit: Arc<AtomicBool>,
+    /// UI 阶段: 0=加载中 1=就绪 2=说话中
+    pub phase: Arc<AtomicU8>,
+    /// 加载进度 (0~100)
+    pub progress: Arc<AtomicU8>,
 }
 
 impl UiState {
@@ -52,12 +62,22 @@ impl UiState {
             energy: Arc::new(AtomicU8::new(0)),
             style: Arc::new(AtomicU8::new(0)),
             quit,
+            phase: Arc::new(AtomicU8::new(0)), // 0 = Loading
+            progress: Arc::new(AtomicU8::new(0)),
         }
     }
 
-    pub fn set_energy(&self, e: f32) {
-        let v = (e.clamp(0.0, 1.0) * 255.0) as u8;
-        self.energy.store(v, Ordering::Relaxed);
+    pub fn set_phase_loading(&self) {
+        self.phase.store(0, Ordering::Relaxed);
+    }
+    pub fn set_phase_ready(&self) {
+        self.phase.store(1, Ordering::Relaxed);
+    }
+    pub fn set_phase_listening(&self) {
+        self.phase.store(2, Ordering::Relaxed);
+    }
+    pub fn set_progress(&self, pct: u8) {
+        self.progress.store(pct.min(100), Ordering::Relaxed);
     }
 }
 
@@ -74,15 +94,11 @@ pub fn run_ui(state: UiState) {
 
     let mut window = match Window::new("", WIN_W, WIN_H, opts) {
         Ok(w) => w,
-        Err(e) => {
-            log::error!("窗口创建失败: {}", e);
-            return;
-        }
+        Err(e) => { log::error!("窗口创建失败: {}", e); return; }
     };
 
     window.set_target_fps(30);
 
-    // Windows: 定位 + 去标题 + 弹出菜单
     #[cfg(target_os = "windows")]
     let hwnd = setup_window_win32();
 
@@ -91,33 +107,35 @@ pub fn run_ui(state: UiState) {
     let mut right_was_down = false;
 
     while window.is_open() && !state.quit.load(Ordering::Relaxed) {
-        // 检测右键点击
+        // 右键菜单
         let right_down = window.get_mouse_down(MouseButton::Right);
         if right_down && !right_was_down {
-            // 右键刚按下 → 弹出菜单
             #[cfg(target_os = "windows")]
-            {
-                if let Some(choice) = show_popup_menu_win32(hwnd) {
-                    match choice {
-                        MENU_SINE => state.style.store(0, Ordering::Relaxed),
-                        MENU_BAR  => state.style.store(1, Ordering::Relaxed),
-                        MENU_DOT  => state.style.store(2, Ordering::Relaxed),
-                        MENU_FLAT => state.style.store(3, Ordering::Relaxed),
-                        MENU_QUIT => {
-                            state.quit.store(true, Ordering::Relaxed);
-                            break;
-                        }
-                        _ => {}
-                    }
+            if let Some(choice) = show_popup_menu_win32(hwnd) {
+                match choice {
+                    MENU_SINE => state.style.store(0, Ordering::Relaxed),
+                    MENU_BAR  => state.style.store(1, Ordering::Relaxed),
+                    MENU_DOT  => state.style.store(2, Ordering::Relaxed),
+                    MENU_FLAT => state.style.store(3, Ordering::Relaxed),
+                    MENU_QUIT => { state.quit.store(true, Ordering::Relaxed); break; }
+                    _ => {}
                 }
             }
         }
         right_was_down = right_down;
 
-        // 渲染
+        // 读取状态
+        let phase = state.phase.load(Ordering::Relaxed);
         let energy = state.energy.load(Ordering::Relaxed) as f32 / 255.0;
+        let progress = state.progress.load(Ordering::Relaxed);
         let style = WaveStyle::from_u8(state.style.load(Ordering::Relaxed));
-        render_frame(&mut buf, WIN_W, WIN_H, energy, style, frame);
+
+        // 渲染
+        match phase {
+            0 => render_loading(&mut buf, WIN_W, WIN_H, progress, frame),
+            1 => render_ready(&mut buf, WIN_W, WIN_H, frame),
+            _ => render_waveform(&mut buf, WIN_W, WIN_H, energy, style, frame),
+        }
         frame += 1;
 
         window.update_with_buffer(&buf, WIN_W, WIN_H).ok();
@@ -127,128 +145,81 @@ pub fn run_ui(state: UiState) {
 }
 
 // ═══════════════════════════════════════════
-//  Windows API: 窗口定位 + 弹出菜单
+//  渲染: 加载中
 // ═══════════════════════════════════════════
 
-#[cfg(target_os = "windows")]
-fn setup_window_win32() -> isize {
-    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+fn render_loading(buf: &mut [u32], w: usize, h: usize, progress: u8, frame: u64) {
+    let bg = rgb(20, 20, 30);
+    buf.fill(bg);
+    draw_border(buf, w, h, rgb(60, 60, 80));
 
-    unsafe {
-        // 等待 minifb 窗口创建完成
-        std::thread::sleep(std::time::Duration::from_millis(200));
+    // 进度条背景
+    let bar_y = h / 2;
+    let bar_x_start = 8;
+    let bar_x_end = w - 8;
+    let bar_width = bar_x_end - bar_x_start;
 
-        let screen_w = GetSystemMetrics(SM_CXSCREEN);
-        let x = (screen_w - WIN_W as i32) / 2;
-        let y = 6;
-
-        // 通过当前线程ID查找窗口
-        let tid = windows_sys::Win32::System::Threading::GetCurrentThreadId();
-        let mut hwnd = GetTopWindow(0);
-        let mut found: isize = 0;
-
-        for _ in 0..100 {
-            if hwnd == 0 { break; }
-            let mut pid: u32 = 0;
-            let wtid = GetWindowThreadProcessId(hwnd, &mut pid);
-            if wtid == tid && IsWindowVisible(hwnd) != 0 {
-                found = hwnd;
-                break;
-            }
-            hwnd = GetWindow(hwnd, GW_HWNDNEXT);
-        }
-
-        if found == 0 {
-            // fallback: 通过类名查找
-            let cls: Vec<u16> = "minifb_window\0".encode_utf16().collect();
-            found = FindWindowW(cls.as_ptr(), std::ptr::null());
-        }
-
-        if found != 0 {
-            // 设置窗口样式：无标题栏弹出窗口
-            let style = WS_POPUP | WS_VISIBLE;
-            SetWindowLongW(found, GWL_STYLE, style as i32);
-
-            // 扩展样式：工具窗口 + 置顶 + 分层（支持透明）
-            let ex_style = WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED;
-            SetWindowLongW(found, GWL_EXSTYLE, ex_style as i32);
-
-            // 设置透明度 70% (alpha = 255 * 0.7 ≈ 179)
-            SetLayeredWindowAttributes(found, 0, 179, LWA_ALPHA);
-
-            // 居中定位到屏幕上方
-            SetWindowPos(
-                found,
-                HWND_TOPMOST,
-                x, y,
-                WIN_W as i32, WIN_H as i32,
-                SWP_FRAMECHANGED | SWP_SHOWWINDOW,
-            );
-
-            log::info!("UI 窗口已定位: ({}, {}), 透明度 70%", x, y);
-        } else {
-            log::warn!("未找到 UI 窗口句柄，无法设置居中和透明");
-        }
-
-        found
+    // 进度条轨道
+    for x in bar_x_start..bar_x_end {
+        set_px(buf, w, x, bar_y, rgb(40, 40, 60));
+        set_px(buf, w, x, bar_y - 1, rgb(40, 40, 60));
     }
-}
 
-#[cfg(target_os = "windows")]
-fn show_popup_menu_win32(hwnd: isize) -> Option<u32> {
-    use windows_sys::Win32::UI::WindowsAndMessaging::*;
-    use windows_sys::Win32::Foundation::*;
-    use windows_sys::Win32::Graphics::Gdi::*;
-
-    unsafe {
-        let hmenu = CreatePopupMenu();
-        if hmenu == 0 { return None; }
-
-        // 添加菜单项
-        let items: &[(u32, &str)] = &[
-            (MENU_SINE, "正弦波 ～～\0"),
-            (MENU_BAR,  "柱状条 ▐▌\0"),
-            (MENU_DOT,  "点阵 ·•·\0"),
-            (MENU_FLAT, "平直线 ──\0"),
-            (0,         "-\0"),  // separator
-            (MENU_QUIT, "退出\0"),
-        ];
-
-        for (id, text) in items {
-            if *id == 0 {
-                AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
-            } else {
-                let wide: Vec<u16> = text.encode_utf16().collect();
-                AppendMenuW(hmenu, MF_STRING, *id as usize, wide.as_ptr());
-            }
-        }
-
-        // 获取鼠标位置
-        let mut pt = POINT { x: 0, y: 0 };
-        GetCursorPos(&mut pt);
-
-        // 弹出菜单（阻塞直到选择）
-        SetForegroundWindow(hwnd);
-        let cmd = TrackPopupMenu(
-            hmenu,
-            TPM_RETURNCMD | TPM_RIGHTBUTTON,
-            pt.x, pt.y,
-            0,
-            hwnd,
-            std::ptr::null(),
-        );
-
-        DestroyMenu(hmenu);
-
-        if cmd > 0 { Some(cmd as u32) } else { None }
+    // 进度条填充
+    let fill_end = bar_x_start + (bar_width * progress as usize) / 100;
+    for x in bar_x_start..fill_end {
+        let color = rgb(80, 180, 255);
+        set_px(buf, w, x, bar_y, color);
+        set_px(buf, w, x, bar_y - 1, color);
     }
+
+    // 加载动画点 (脉冲)
+    let dot_x = bar_x_start + ((frame as usize * 2) % bar_width);
+    if dot_x < fill_end {
+        set_px(buf, w, dot_x, bar_y, rgb(255, 255, 255));
+        set_px(buf, w, dot_x, bar_y - 1, rgb(255, 255, 255));
+    }
+
+    // 文字提示 "加载中..." 用像素字
+    draw_text_loading(buf, w, h, progress);
 }
 
 // ═══════════════════════════════════════════
-//  渲染
+//  渲染: 就绪
 // ═══════════════════════════════════════════
 
-fn render_frame(buf: &mut [u32], w: usize, h: usize, energy: f32, style: WaveStyle, frame: u64) {
+fn render_ready(buf: &mut [u32], w: usize, h: usize, frame: u64) {
+    let bg = rgb(20, 25, 20);
+    buf.fill(bg);
+    draw_border(buf, w, h, rgb(40, 100, 60));
+
+    let mid_y = h / 2;
+
+    // 绿色呼吸灯效果
+    let breath = ((frame as f64 * 0.05).sin() * 0.3 + 0.7) as f32;
+    let g = (180.0 * breath) as u8;
+    let color = rgb(40, g, 80);
+
+    // 中间平直线 + 轻微起伏
+    for x in 4..w - 4 {
+        let wobble = ((x as f64 + frame as f64 * 0.5) * 0.1).sin() * 1.0;
+        let y = (mid_y as f64 + wobble) as usize;
+        set_px(buf, w, x, y, color);
+    }
+
+    // "就绪" 指示点
+    let dot_color = rgb(60, 220, 100);
+    set_px(buf, w, 3, mid_y, dot_color);
+    set_px(buf, w, 4, mid_y, dot_color);
+    set_px(buf, w, 3, mid_y - 1, dot_color);
+    set_px(buf, w, 4, mid_y - 1, dot_color);
+}
+
+// ═══════════════════════════════════════════
+//  渲染: 波纹 (说话中)
+// ═══════════════════════════════════════════
+
+fn render_waveform(buf: &mut [u32], w: usize, h: usize, energy: f32, style: WaveStyle, frame: u64) {
     let bg = rgb(20, 20, 30);
     let fg = rgb(80, 200, 255);
     let fg_hi = rgb(255, 140, 60);
@@ -306,9 +277,147 @@ fn render_frame(buf: &mut [u32], w: usize, h: usize, energy: f32, style: WaveSty
     }
 }
 
-fn rgb(r: u8, g: u8, b: u8) -> u32 {
-    (r as u32) << 16 | (g as u32) << 8 | b as u32
+// ═══════════════════════════════════════════
+//  像素文字: "加载中 XX%"
+// ═══════════════════════════════════════════
+
+fn draw_text_loading(buf: &mut [u32], w: usize, h: usize, progress: u8) {
+    // 简单的 3x5 数字像素字体绘制进度百分比
+    let text_y = h / 2 - 5; // 进度条上方
+    let text_color = rgb(160, 200, 240);
+
+    // 绘制百分比数字 (居中)
+    let pct_str = format!("{}%", progress);
+    let char_w = 4;
+    let total_w = pct_str.len() * char_w;
+    let start_x = (w - total_w) / 2;
+
+    for (i, ch) in pct_str.chars().enumerate() {
+        let x = start_x + i * char_w;
+        draw_mini_char(buf, w, x, text_y, ch, text_color);
+    }
 }
+
+/// 3x5 像素迷你字符
+fn draw_mini_char(buf: &mut [u32], w: usize, x: usize, y: usize, ch: char, color: u32) {
+    let pattern: [u8; 5] = match ch {
+        '0' => [0b111, 0b101, 0b101, 0b101, 0b111],
+        '1' => [0b010, 0b110, 0b010, 0b010, 0b111],
+        '2' => [0b111, 0b001, 0b111, 0b100, 0b111],
+        '3' => [0b111, 0b001, 0b111, 0b001, 0b111],
+        '4' => [0b101, 0b101, 0b111, 0b001, 0b001],
+        '5' => [0b111, 0b100, 0b111, 0b001, 0b111],
+        '6' => [0b111, 0b100, 0b111, 0b101, 0b111],
+        '7' => [0b111, 0b001, 0b001, 0b001, 0b001],
+        '8' => [0b111, 0b101, 0b111, 0b101, 0b111],
+        '9' => [0b111, 0b101, 0b111, 0b001, 0b111],
+        '%' => [0b101, 0b001, 0b010, 0b100, 0b101],
+        _ => [0; 5],
+    };
+
+    for row in 0..5 {
+        for col in 0..3 {
+            if (pattern[row] >> (2 - col)) & 1 == 1 {
+                set_px(buf, w, x + col, y + row, color);
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════
+//  Windows API
+// ═══════════════════════════════════════════
+
+#[cfg(target_os = "windows")]
+fn setup_window_win32() -> isize {
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+
+    unsafe {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let screen_w = GetSystemMetrics(SM_CXSCREEN);
+        let x = (screen_w - WIN_W as i32) / 2;
+        let y = 6;
+
+        let tid = windows_sys::Win32::System::Threading::GetCurrentThreadId();
+        let mut hwnd = GetTopWindow(0);
+        let mut found: isize = 0;
+
+        for _ in 0..100 {
+            if hwnd == 0 { break; }
+            let mut pid: u32 = 0;
+            let wtid = GetWindowThreadProcessId(hwnd, &mut pid);
+            if wtid == tid && IsWindowVisible(hwnd) != 0 {
+                found = hwnd;
+                break;
+            }
+            hwnd = GetWindow(hwnd, GW_HWNDNEXT);
+        }
+
+        if found == 0 {
+            let cls: Vec<u16> = "minifb_window\0".encode_utf16().collect();
+            found = FindWindowW(cls.as_ptr(), std::ptr::null());
+        }
+
+        if found != 0 {
+            let style = WS_POPUP | WS_VISIBLE;
+            SetWindowLongW(found, GWL_STYLE, style as i32);
+
+            let ex_style = WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED;
+            SetWindowLongW(found, GWL_EXSTYLE, ex_style as i32);
+
+            SetLayeredWindowAttributes(found, 0, 179, LWA_ALPHA);
+
+            SetWindowPos(found, HWND_TOPMOST, x, y, WIN_W as i32, WIN_H as i32,
+                SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+        }
+
+        found
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn show_popup_menu_win32(hwnd: isize) -> Option<u32> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+
+    unsafe {
+        let hmenu = CreatePopupMenu();
+        if hmenu == 0 { return None; }
+
+        let items: &[(u32, &str)] = &[
+            (MENU_SINE, "正弦波 ～～\0"),
+            (MENU_BAR,  "柱状条 ▐▌\0"),
+            (MENU_DOT,  "点阵 ·•·\0"),
+            (MENU_FLAT, "平直线 ──\0"),
+            (0, "-\0"),
+            (MENU_QUIT, "退出\0"),
+        ];
+
+        for (id, text) in items {
+            if *id == 0 {
+                AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
+            } else {
+                let wide: Vec<u16> = text.encode_utf16().collect();
+                AppendMenuW(hmenu, MF_STRING, *id as usize, wide.as_ptr());
+            }
+        }
+
+        let mut pt = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
+        GetCursorPos(&mut pt);
+        SetForegroundWindow(hwnd);
+        let cmd = TrackPopupMenu(hmenu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
+            pt.x, pt.y, 0, hwnd, std::ptr::null());
+        DestroyMenu(hmenu);
+
+        if cmd > 0 { Some(cmd as u32) } else { None }
+    }
+}
+
+// ═══════════════════════════════════════════
+//  像素工具
+// ═══════════════════════════════════════════
+
+fn rgb(r: u8, g: u8, b: u8) -> u32 { (r as u32) << 16 | (g as u32) << 8 | b as u32 }
 
 fn blend(c1: u32, c2: u32, t: f32) -> u32 {
     let r = (((c1 >> 16) & 0xFF) as f32 * (1.0 - t) + ((c2 >> 16) & 0xFF) as f32 * t) as u8;
@@ -318,9 +427,7 @@ fn blend(c1: u32, c2: u32, t: f32) -> u32 {
 }
 
 fn set_px(buf: &mut [u32], w: usize, x: usize, y: usize, color: u32) {
-    if x < w && y < buf.len() / w {
-        buf[y * w + x] = color;
-    }
+    if x < w && y < buf.len() / w { buf[y * w + x] = color; }
 }
 
 fn draw_border(buf: &mut [u32], w: usize, h: usize, color: u32) {
@@ -330,14 +437,12 @@ fn draw_border(buf: &mut [u32], w: usize, h: usize, color: u32) {
 
 fn draw_dot(buf: &mut [u32], w: usize, cx: usize, cy: usize, r: usize, color: u32) {
     if r == 0 { set_px(buf, w, cx, cy, color); return; }
-    for dy in 0..=r {
-        for dx in 0..=r {
-            if dx * dx + dy * dy <= r * r {
-                set_px(buf, w, cx + dx, cy + dy, color);
-                if cx >= dx { set_px(buf, w, cx - dx, cy + dy, color); }
-                if cy >= dy { set_px(buf, w, cx + dx, cy - dy, color); }
-                if cx >= dx && cy >= dy { set_px(buf, w, cx - dx, cy - dy, color); }
-            }
+    for dy in 0..=r { for dx in 0..=r {
+        if dx * dx + dy * dy <= r * r {
+            set_px(buf, w, cx + dx, cy + dy, color);
+            if cx >= dx { set_px(buf, w, cx - dx, cy + dy, color); }
+            if cy >= dy { set_px(buf, w, cx + dx, cy - dy, color); }
+            if cx >= dx && cy >= dy { set_px(buf, w, cx - dx, cy - dy, color); }
         }
-    }
+    }}
 }
