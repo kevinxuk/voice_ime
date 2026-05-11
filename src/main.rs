@@ -10,6 +10,7 @@ mod learn;
 mod ui;
 mod commands;
 mod hotkey;
+mod settings;
 
 use std::sync::mpsc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,6 +36,7 @@ fn main() {
     let ui_phase = ui_state.phase.clone();
     let ui_progress = ui_state.progress.clone();
     let ui_flash = ui_state.flash_frames.clone();
+    let ui_open_settings = ui_state.open_settings.clone();
 
     ui_state.set_phase_loading();
     ui_state.set_progress(0);
@@ -135,6 +137,11 @@ fn main() {
     // ═══ 8. 主循环 ═══
     loop {
         if quit.load(Ordering::Relaxed) { break; }
+
+        // 设置页面请求
+        if ui_open_settings.swap(false, Ordering::Relaxed) {
+            settings::open_settings(&config.model_dir());
+        }
 
         // 热键事件
         while let Ok(ev) = hk_rx.try_recv() {

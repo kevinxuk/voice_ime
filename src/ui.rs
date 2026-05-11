@@ -40,6 +40,7 @@ const MENU_SINE: u32 = 100;
 const MENU_BAR: u32 = 101;
 const MENU_DOT: u32 = 102;
 const MENU_FLAT: u32 = 103;
+const MENU_SETTINGS: u32 = 150;
 const MENU_QUIT: u32 = 200;
 
 /// 共享状态
@@ -56,6 +57,8 @@ pub struct UiState {
     pub progress: Arc<AtomicU8>,
     /// 黄色闪烁剩余帧数（命令执行反馈）
     pub flash_frames: Arc<AtomicU8>,
+    /// 打开设置信号
+    pub open_settings: Arc<AtomicBool>,
 }
 
 impl UiState {
@@ -67,6 +70,7 @@ impl UiState {
             phase: Arc::new(AtomicU8::new(0)),
             progress: Arc::new(AtomicU8::new(0)),
             flash_frames: Arc::new(AtomicU8::new(0)),
+            open_settings: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -127,6 +131,7 @@ pub fn run_ui(state: UiState) {
                     MENU_BAR  => state.style.store(1, Ordering::Relaxed),
                     MENU_DOT  => state.style.store(2, Ordering::Relaxed),
                     MENU_FLAT => state.style.store(3, Ordering::Relaxed),
+                    MENU_SETTINGS => state.open_settings.store(true, Ordering::Relaxed),
                     MENU_QUIT => { state.quit.store(true, Ordering::Relaxed); break; }
                     _ => {}
                 }
@@ -443,6 +448,8 @@ fn show_popup_menu_win32(hwnd: isize) -> Option<u32> {
             (MENU_BAR,  "柱状条 ▐▌\0"),
             (MENU_DOT,  "点阵 ·•·\0"),
             (MENU_FLAT, "平直线 ──\0"),
+            (0, "-\0"),
+            (MENU_SETTINGS, "设置...\0"),
             (0, "-\0"),
             (MENU_QUIT, "退出\0"),
         ];

@@ -8,3 +8,4 @@ pub mod learn;
 pub mod ui;
 pub mod commands;
 pub mod hotkey;
+pub mod settings;
