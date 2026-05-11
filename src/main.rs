@@ -5,6 +5,7 @@ mod audio;
 mod vad;
 mod asr;
 mod output;
+mod learn;
 
 use std::io::{self, Write};
 use std::sync::mpsc;
@@ -36,13 +37,18 @@ fn main() {
     }
     log::info!("模型目录: {}", config.model_dir_str());
 
-    println!("\n  Enter = 开始/停止  |  Q = 退出\n");
-
     // ASR
     let asr = match asr::AsrEngine::new(&config) {
         Ok(e) => { log::info!("ASR 就绪"); e }
         Err(e) => { eprintln!("❌ ASR 失败: {}", e); std::process::exit(1); }
     };
+
+    // 自学习引擎
+    let learner = learn::LearningEngine::new(&config.model_dir());
+    let (vocab_count, total_freq) = learner.stats();
+    if vocab_count > 0 {
+        log::info!("已加载历史词频: {} 词, 共 {} 次", vocab_count, total_freq);
+    }
 
     // 输出
     let mut keyboard = output::KeyboardOutput::new();
@@ -67,15 +73,15 @@ fn main() {
         if let Err(e) = cap.start(Cb { tx, r }) {
             log::error!("音频采集失败: {}", e);
         }
-        // start() 内部 forget(stream)，线程需要保持存活
         loop { thread::sleep(Duration::from_secs(3600)); }
     });
 
+    println!("\n  Enter = 开始/停止  |  Q = 退出");
+    println!("  识别结果会自动纠错并记录词频\n");
     println!("✅ 就绪\n");
     let mut listening = true;
 
     loop {
-        // 接收音频
         while let Ok(samples) = rx.try_recv() {
             if !listening || samples.is_empty() { continue; }
             vad.feed(&samples);
@@ -88,8 +94,17 @@ fn main() {
 
                     match asr.recognize(&speech) {
                         Ok(r) if !r.text.is_empty() => {
-                            println!("\r🎤 {} ({}ms)          ", r.text, r.latency_ms);
-                            if let Err(e) = keyboard.send_text(&r.text) {
+                            // 自学习: 纠错 + 记录词频
+                            let final_text = learner.process(&r.text);
+
+                            if final_text != r.text {
+                                println!("\r🎤 {} → {} ({}ms)",
+                                    r.text, final_text, r.latency_ms);
+                            } else {
+                                println!("\r🎤 {} ({}ms)", final_text, r.latency_ms);
+                            }
+
+                            if let Err(e) = keyboard.send_text(&final_text) {
                                 eprintln!("⚠ 输出: {}", e);
                             }
                         }
@@ -104,7 +119,14 @@ fn main() {
         // 按键
         if let Some(c) = read_key() {
             match c {
-                'q' => { println!("退出..."); break; }
+                'q' => {
+                    // 退出前保存词频
+                    learner.flush();
+                    let (vc, tf) = learner.stats();
+                    println!("📊 本次会话统计: {} 个词汇, 共 {} 次识别", vc, tf);
+                    println!("退出...");
+                    break;
+                }
                 _ => {
                     listening = !listening;
                     println!("{}", if listening { "[▶] 监听中" } else { "[⏸] 已停止" });
