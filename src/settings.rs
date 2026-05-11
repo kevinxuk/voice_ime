@@ -77,11 +77,13 @@ fn run_settings_server(exe_dir: &Path, model_dir: &Path) -> anyhow::Result<()> {
         if request_line.starts_with("GET / ") || request_line.starts_with("GET /index") {
             // 返回设置页面
             let html = generate_settings_html(exe_dir, model_dir);
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                html.len(), html
+            let body_bytes = html.as_bytes();
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body_bytes.len()
             );
-            stream.write_all(response.as_bytes())?;
+            stream.write_all(header.as_bytes())?;
+            stream.write_all(body_bytes)?;
         } else if request_line.starts_with("POST /save") {
             // 读取 body
             let mut body = vec![0u8; content_length];
@@ -95,11 +97,13 @@ fn run_settings_server(exe_dir: &Path, model_dir: &Path) -> anyhow::Result<()> {
 <body style="font-family:sans-serif;text-align:center;padding:60px;background:#1a1a2e;color:#eee">
 <h2>{}</h2><p><a href="/" style="color:#4fc3f7">返回设置</a></p>
 </body></html>"#, msg);
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                html.len(), html
+            let body_bytes = html.as_bytes();
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body_bytes.len()
             );
-            stream.write_all(response.as_bytes())?;
+            stream.write_all(header.as_bytes())?;
+            stream.write_all(body_bytes)?;
         } else {
             let response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
             stream.write_all(response.as_bytes())?;
