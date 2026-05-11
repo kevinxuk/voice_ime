@@ -133,27 +133,25 @@ pub fn run_ui(state: UiState) {
 #[cfg(target_os = "windows")]
 fn setup_window_win32() -> isize {
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
-    use windows_sys::Win32::Foundation::*;
 
     unsafe {
-        // 等待窗口创建完成
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        // 等待 minifb 窗口创建完成
+        std::thread::sleep(std::time::Duration::from_millis(200));
 
         let screen_w = GetSystemMetrics(SM_CXSCREEN);
         let x = (screen_w - WIN_W as i32) / 2;
         let y = 6;
 
-        // 枚举所有窗口找到我们的（通过线程ID）
+        // 通过当前线程ID查找窗口
         let tid = windows_sys::Win32::System::Threading::GetCurrentThreadId();
         let mut hwnd = GetTopWindow(0);
-
-        // 简单方法：找最近创建的无标题窗口
         let mut found: isize = 0;
-        for _ in 0..50 {
+
+        for _ in 0..100 {
             if hwnd == 0 { break; }
             let mut pid: u32 = 0;
             let wtid = GetWindowThreadProcessId(hwnd, &mut pid);
-            if wtid == tid {
+            if wtid == tid && IsWindowVisible(hwnd) != 0 {
                 found = hwnd;
                 break;
             }
@@ -161,21 +159,24 @@ fn setup_window_win32() -> isize {
         }
 
         if found == 0 {
-            // fallback: 用 FindWindow
+            // fallback: 通过类名查找
             let cls: Vec<u16> = "minifb_window\0".encode_utf16().collect();
             found = FindWindowW(cls.as_ptr(), std::ptr::null());
         }
 
         if found != 0 {
-            // 去掉标题栏，设置为纯弹出窗口
+            // 设置窗口样式：无标题栏弹出窗口
             let style = WS_POPUP | WS_VISIBLE;
             SetWindowLongW(found, GWL_STYLE, style as i32);
 
-            // 设置为工具窗口 + 置顶
-            let ex_style = WS_EX_TOOLWINDOW | WS_EX_TOPMOST;
+            // 扩展样式：工具窗口 + 置顶 + 分层（支持透明）
+            let ex_style = WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED;
             SetWindowLongW(found, GWL_EXSTYLE, ex_style as i32);
 
-            // 定位
+            // 设置透明度 70% (alpha = 255 * 0.7 ≈ 179)
+            SetLayeredWindowAttributes(found, 0, 179, LWA_ALPHA);
+
+            // 居中定位到屏幕上方
             SetWindowPos(
                 found,
                 HWND_TOPMOST,
@@ -183,6 +184,10 @@ fn setup_window_win32() -> isize {
                 WIN_W as i32, WIN_H as i32,
                 SWP_FRAMECHANGED | SWP_SHOWWINDOW,
             );
+
+            log::info!("UI 窗口已定位: ({}, {}), 透明度 70%", x, y);
+        } else {
+            log::warn!("未找到 UI 窗口句柄，无法设置居中和透明");
         }
 
         found
