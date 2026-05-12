@@ -68,6 +68,7 @@ impl App {
                     hotkey::HotkeyEvent::KeyDown => {
                         let handle = self.asr.new_stream();
                         self.ui_phase.store(2, Ordering::Relaxed);
+                        self.preview.show_text("录音中...");
                         state = AppState::Recording { handle, start: Instant::now() };
                     }
                     hotkey::HotkeyEvent::KeyUp => {
@@ -162,9 +163,9 @@ impl App {
                 }
             }
 
-            // 预览 → 1秒后自动输出
+            // 预览 → 1.5秒后自动输出
             if let AppState::Previewing { ref text, ref start, .. } = state {
-                if start.elapsed() >= Duration::from_secs(1) {
+                if start.elapsed() >= Duration::from_millis(1500) {
                     if !text.is_empty() {
                         if let Err(e) = self.keyboard.send_text(text) {
                             log::error!("输出: {}", e);
