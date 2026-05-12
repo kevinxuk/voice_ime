@@ -1677,7 +1677,7 @@ checksum = "579a42fc0b8e0c63b76519a339be31bed574929511fa53c1a3acae26eb258f29"
 
 [[package]]
 name = "voice_ime"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "cpal",
